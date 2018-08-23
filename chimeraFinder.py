@@ -23,9 +23,20 @@ class Alignment:
 
 class Read:
 	def __init__(self, read_id, read_length):
-		self.read_id 		= read_id
-		self.read_length 	= read_length
-		self.alignments 	= list()
+		self.read_id 			= read_id
+		self.read_length 		= read_length
+		self.alignments 		= list()
+		self.alignment_coverage = 0
+		self.alignment_overlap	= 0
+		self.alignment_sum		= 0
+
+	def printAlignmentReportForRead(self):
+		print "--------------------------------------------------"
+		print "Chimera suspected in read " + self.read_id + ", consisting of " + str(len(self.alignments)) + " parts:"
+		for i in xrange(0, len(self.alignments)):
+			print "-----Alignment " + str(i+1) + "----- "
+			self.alignments[i].printAlignment()
+		print "Total length: " + str(self.alignment_sum) + " / " + str(self.read_length) + " (" + str(self.alignment_coverage * 100) + ")."		
 
 start = time.time()
 
@@ -37,17 +48,18 @@ reportChimeras = False
 fastaFileName = ''
 outputFastaName = ''
 writeNewFasta = False
-printAlignmentStats = True
+printAlignmentStats = False
+polyChimera = 0
 
 try:
 	opts, args = getopt.getopt(sys.argv[1:],"hi:q:c:l:f:o:")
 except getopt.GetoptError:
 	print "Option not recognised."
-	print "chimeraFinder.py -i <paf-file> -q <min alignment quality> -l <min alignment length> -c <min chimera coverage (%)>"
+	print "chimeraFinder.py -i <paf-file> -q <min alignment quality> -l <min alignment length> -c <min chimera coverage (%) -f <fasta containing original reads> -o <filename for new fasta with chimeras split into separate reads>"
 	sys.exit(2)
 for opt, arg in opts:
 	if opt == "-h":
-		print "chimeraFinder.py -i <paf-file> -q <min alignment quality> -l <min alignment length> -c <min chimera coverage (%)>"
+		print "chimeraFinder.py -i <paf-file> -q <min alignment quality> -l <min alignment length> -c <min chimera coverage (%)  -f <fasta containing original reads> -o <filename for new fasta with chimeras split into separate reads>"
 		sys.exit()
 	elif opt in ("-i"):
 		pafFileName = arg
@@ -83,95 +95,63 @@ except (OSError, IOError) as e:
 
 estimatedNumberOfReads = len(reads)
 
-if printAlignmentStats:
-	averagePercentOfReadsAligned = 0
-	for entry in reads.itervalues():
-		alignmentList = sorted(entry.alignments, key=lambda alignment: alignment.query_start)
-		uniqueAlignedSum = 0
-		alignmentSum = 0
-		overlapSum = 0
-		lastQueryEnd = 0
-		averageAlignmentLengthForRead= 0
-		for alignment in alignmentList:
-			averageAlignmentLengthForRead += alignment.alignment_length
-			alignmentSum += alignment.query_end - alignment.query_start
-			if lastQueryEnd <= alignment.query_start:
-				uniqueAlignedSum += (alignment.query_end - alignment.query_start)
-			elif alignment.query_end >= lastQueryEnd :
-				uniqueAlignedSum += (alignment.query_end - lastQueryEnd)
-				overlapSum += (lastQueryEnd - alignment.query_start)
-			else:
-				overlapSum += (alignment.query_end - alignment.query_start)
-			lastQueryEnd = alignment.query_end
-		averageAlignmentLengthForRead = float(averageAlignmentLengthForRead) / len(entry.alignments)
-		percentOfReadAligned = float(uniqueAlignedSum) / entry.read_length * 100
-		averagePercentOfReadsAligned += percentOfReadAligned
+averagePercentOfReadsAligned = 0
+for entry in reads.itervalues():
+	entry.alignments.sort(key=lambda alignment: alignment.query_start)
+	alignmentList = entry.alignments
+	uniqueAlignedSum = 0
+	lastQueryEnd = 0
+	averageAlignmentLengthForRead = 0
+	for alignment in alignmentList:
+		averageAlignmentLengthForRead += alignment.alignment_length
+		entry.alignment_sum += alignment.query_end - alignment.query_start
+		if lastQueryEnd <= alignment.query_start:
+			uniqueAlignedSum += (alignment.query_end - alignment.query_start)
+		elif alignment.query_end >= lastQueryEnd :
+			uniqueAlignedSum += (alignment.query_end - lastQueryEnd)
+			entry.alignment_overlap += (lastQueryEnd - alignment.query_start)
+		else:
+			entry.alignment_overlap += (alignment.query_end - alignment.query_start)
+		lastQueryEnd = alignment.query_end
+	averageAlignmentLengthForRead = float(averageAlignmentLengthForRead) / len(entry.alignments)
+	entry.alignment_coverage = float(uniqueAlignedSum) / entry.read_length
+	percentOfReadAligned = entry.alignment_coverage * 100
+	averagePercentOfReadsAligned += percentOfReadAligned
+
+	if printAlignmentStats:
 		print "--- Read " + entry.read_id + " stats ---"
 		print "Number of alignments: " + str(len(entry.alignments))
-		print "Sum of all alignment lengths: " + str(alignmentSum)
+		print "Sum of all alignment lengths: " + str(entry.alignment_sum)
 		print "Average alignment length: " + str(averageAlignmentLengthForRead)
-		print "Alignments overlapped by " + str(overlapSum) + " bp."
+		print "Alignments overlapped by " + str(entry.alignment_overlap) + " bp."
 		print "Aligned " + str(uniqueAlignedSum) + " / " + str(entry.read_length) + " (" + str(percentOfReadAligned) + "%) bp."
-	averagePercentOfReadsAligned = float(averagePercentOfReadsAligned)/len(reads)
-	print "----------------------------------------"
-	print "Average percent of reads aligned: " + str(averagePercentOfReadsAligned) + "%"
 
+averagePercentOfReadsAligned = float(averagePercentOfReadsAligned)/len(reads)
+print "\nAverage percent of reads aligned: " + str(averagePercentOfReadsAligned) + "%"
 
-#iterate through the dictionary and remove those entries that only have one alignment
-entriesToDelete = list()
-for entry in reads.itervalues():
-	if len(entry.alignments) <= 1:
-		entriesToDelete.append(entry.read_id)
-	else:
-		#order alignments by size
-		entry.alignments.sort()
-
-for read_id in entriesToDelete:
-	del reads[read_id]
-	
-if printAlignmentStats:
-	print "Reads with more than one alignment: " + str(len(reads)) + " / " + str(estimatedNumberOfReads) + "."
-
-if not reads:
-	print "Could not find Chimeras in file " + pafFileName + "."
-	sys.exit()
-
-#look for chimera's
+#look for chimerae
 chimeras = dict()
 for entry in reads.itervalues():
-	minLength = (minCoverage / 100.0) * entry.read_length
-	besti = -1
-	bestj = -1
-	# compare all pairs of alignments
-	# pick the pair that has the longest total length
-	for i in xrange(len(entry.alignments)):
-		for j in xrange(i + 1, len(entry.alignments)):
-			if entry.alignments[i].query_end < entry.alignments[j].query_start or entry.alignments[j].query_end < entry.alignments[i].query_start:
-				totalAlignmentLength = entry.alignments[i].alignment_length + entry.alignments[j].alignment_length
-				if totalAlignmentLength > minLength:
-					minLength = totalAlignmentLength
-					besti = i
-					bestj = j
-
-	if besti != -1:
+	if len(entry.alignments) > 1 and entry.alignment_overlap == 0 and entry.alignment_coverage * 100 > minCoverage:
 		chimeras[entry.read_id] = Read(entry.read_id, entry.read_length)
-		chimeras[entry.read_id].alignments.append(entry.alignments[besti])
-		chimeras[entry.read_id].alignments.append(entry.alignments[bestj])
+		chimeras[entry.read_id].alignments = entry.alignments
 		if reportChimeras:
-			#report chimera:
-			print "--------------------------------------------------"
-			print "Chimera found in read " + entry.read_id + ":"
-			print "-----Alignment 1----- "
-			entry.alignments[0].printAlignment()
-			print "-----Alignment 2----- "
-			entry.alignments[1].printAlignment()
-			print "Total length: " + str(entry.alignments[0].alignment_length + entry.alignments[1].alignment_length) + " / " + str(entry.read_length)
+			entry.printAlignmentReportForRead()
+		if len(entry.alignments) > 2:
+			polyChimera += 1
+
+#free this memory
+del reads
+
+if not chimeras:
+	print "Could not find Chimera's in file " + pafFileName + "."
+	sys.exit()
 
 numReads = estimatedNumberOfReads
 
 if writeNewFasta:
 	try:
-	# write the new fasta file with chimeras split into seperate reads
+	# write the new fasta file with chimeras split into seperate reads		
 		with open(fastaFileName, 'r') as fastaFile:
 			with open(outputFastaName, 'w') as outputFile:
 				count = 1
@@ -179,42 +159,39 @@ if writeNewFasta:
 				newHeaderLine1 = ''
 				newHeaderLine2 = ''
 				readID = ''
+				headerFields = ""
 				for line in fastaFile:
 					if count % 2 == 1:
-						fields = line.split()
-						readID = fields[0][1:]
+						headerFields = line.split()
+						readID = headerFields[0][1:]
 						# Check to see if this read is in the list of chimeras 
 						if readID in chimeras.keys():
 							isChimera = True
-							newHeaderLine1 = ">" + readID + "_chimera_1"
-							newHeaderLine2 = ">" + readID + "_chimera_2"
-							for i in xrange(1, len(fields)):
-								newHeaderLine1 += " " + fields[i]
-								newHeaderLine2 += " " + fields[i]
-							newHeaderLine1 += "\n"
-							newHeaderLine2 += "\n"
 						else:
 							isChimera = False
 							outputFile.write(line)
 					else:
 						if isChimera:
-							# find the splitting point
-							# Probably should do something more intelligent than this - maybe keep the highest quality alignment intact and add the junk onto the other one?
-							splittingPoint = 0
-							alignment1 = chimeras[readID].alignments[0]
-							alignment2 = chimeras[readID].alignments[1]
-							if alignment1.query_end < alignment2.query_start:
-								splittingPoint = int((alignment1.query_end + alignment2.query_start) / 2) + 1
-							else:
-								splittingPoint = int((alignment2.query_end + alignment1.query_start) / 2) + 1
-							outputFile.write(newHeaderLine1)
-							outputFile.write(line[:splittingPoint] + "\n")
-							outputFile.write(newHeaderLine2)
-							outputFile.write(line[splittingPoint:])
+							read = chimeras[readID]
+							lastSplittingPoint = 0
+							for i in xrange(0, len(read.alignments)):
+								header = ">" + readID + "_chimera_" + str(i+1)
+								for j in xrange(1, len(headerFields)):
+									header += " " + headerFields[j]
+								header +="\n"
+								outputFile.write(header)
+								if i != len(read.alignments) - 1:
+									assert(read.alignments[i].query_end <= read.alignments[i+1].query_start)
+									splittingPoint = ((read.alignments[i].query_end + read.alignments[i+1].query_start) / 2) + 1
+									assert(splittingPoint - lastSplittingPoint >= 100)
+									outputFile.write(line[lastSplittingPoint:splittingPoint] + "\n")
+									lastSplittingPoint = splittingPoint
+								else:
+									outputFile.write(line[lastSplittingPoint:])
 						else:
 							outputFile.write(line)	
 					count += 1	
-				numReads = count - 1			
+				numReads = count/2		
 	except (OSError, IOError) as e: 
 		if getattr(e, 'errno', 0) == errno.ENOENT:
 			print "Could not open file " + fastaFile
@@ -222,9 +199,8 @@ if writeNewFasta:
 
 numChimeras = len(chimeras)
 percent = (float(numChimeras) / numReads) * 100
-print "Found " + str(numChimeras) + " chimera's out of " + str(numReads) + " reads (" + str(percent) + "%), in reads:"
-for read in chimeras.itervalues():
-	print read.read_id
+print "Found " + str(numChimeras) + " chimera's out of " + str(numReads) + " reads (" + str(percent) + "%)."
+print "Found " + str(polyChimera) + " poly chimera's. Amazing."
 
 end = time.time()
 print("chimeraFinder time: " + str(end - start))
